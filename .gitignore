@@ -1,0 +1,5011 @@
+# -*- coding: utf-8 -*-
+"""
+
+
+Fixed bidders. Full infomation. Mixed stratigies.
+
+revised on 2016-07-30. Add decay rate and smoothing factor
+revised on 2016-08-30, remove the reinforcement strategy
+revised on 2016-09-10, change excel output form
+"""
+
+
+import numpy as np, xlwt, xlrd, random
+
+### def smoothing factor and decay rate
+## define smoothing factor. sf * est of t-1, (1-sf)* est of t-2
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+
+def ficLearning_ful (allBidders,a_bidList,a_ficEstDict):
+    '''fictitious play learning; full information'''
+    
+    tempD={}    
+    for bidder in allBidders:
+        tempD[bidder]={i:'NA' for i in allBidders}
+    
+    indiEstDict={i:'NA' for i in allBidders}
+    for tup in a_bidList:
+        bidder=tup[0]
+        bid=tup[1]
+        indiEstDict.update({bidder:bid})
+    
+    for tup in a_bidList:
+        bidder=tup[0]
+        tempD.update({bidder:indiEstDict})
+                   
+    for i in a_ficEstDict:
+        for j in a_ficEstDict[i]:
+            if a_ficEstDict[i][j]=='NA':
+                newEst=tempD[i][j]
+            else:
+                if tempD[i][j]=='NA':
+                    newEst=a_ficEstDict[i][j]
+                else:
+                    ##weighted average of two rounds. weighted by smoothing factor
+                    ## tempD[i][j]is bid of t-1, a_ficEstDict[i][j]is est of t-2 
+                    newEst=myround((1-sf)*a_ficEstDict[i][j]+sf*tempD[i][j],2)
+            a_ficEstDict[i].update({j:newEst})
+    
+    return a_ficEstDict
+
+def ficUpdating (a_bidList,a_valueDict,a_ficEstDict,a_choosenCountDict,a_ficNBD):
+    '''fictious play updating'''
+    for tup in a_bidList:
+        bidder=tup[0]
+        value=a_valueDict[bidder]
+        temp=sorted([(k,v) for k,v in a_ficEstDict[bidder].items() \
+            if type(v)==float],key=lambda est: est[-1], reverse=True)
+        estList=[tup[0] for tup in temp]
+        estRank=estList.index(bidder)+1
+        if a_choosenCountDict[bidder]<2:
+            nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        else:
+            if estRank in {1,len(estList)}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+        if nextBid>value:
+            nextBid=myround(value-0.5,2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_ficNBD[bidder]=nextBid  
+    
+    return a_ficNBD
+
+def reiUpdating(a_allBiddersList,a_valueDict,a_choosenCountDict,a_bidDict,a_poDict,a_reiNBD):
+
+    for bidder in a_allBiddersList:
+        value=a_valueDict[bidder]
+        choosenCount=a_choosenCountDict[bidder]
+        ## For the first 2 rounds, bids are generated from
+        ##   uniform(0.1,value)
+        if choosenCount<2:
+            nextBid=myround(np.random.uniform(0.1,value),2)
+        ## after two rounds, use current payoff and prior round payoff
+        ##  to generate bid.    
+        else:
+            curPo=a_poDict[bidder][-1]
+            priPo=a_poDict[bidder][-2]
+            curBid=a_bidDict[bidder][-1]
+            if curPo<0.95*priPo:
+                if curBid<0.95*value:
+                    nextBid=myround((1.05*curBid),2)
+                else:
+                    nextBid=myround(value,2)
+            else:
+                nextBid=curBid
+        a_reiNBD[bidder]=nextBid
+    return a_reiNBD
+
+def couUpdating(a_bidList,a_valueDict,a_choosenCountDict,a_couNBD):
+    for tup in a_bidList:
+        bidder=tup[0]
+        rank=a_bidList.index(tup)+1
+        value=a_valueDict[bidder]
+        if a_choosenCountDict[bidder]>1:
+            if rank in {1,5}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-a_bidList[rank][1]),2)
+        else:
+            nextBid=myround(np.random.uniform(0,value),2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_couNBD[bidder]=nextBid
+    return a_couNBD
+
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+
+    ## randomly assign one of three strategies to each bidder and create a
+    ## stratDict.
+    stratDict={}
+    for bidder in allBidders:
+        ## changed range from (1.0,4.0) to (1.0,3.0)
+        n_strat=int(np.random.uniform(1.0,3.0))
+        if n_strat==1:
+            strat='F'
+        ## remove strat 'R'
+#        elif n_strat==2:
+#            strat='R'
+        else:
+            strat='C'
+        stratDict[bidder]=strat
+    
+    allStrats=[tup[1] for tup in sorted([(k,v) for (k,v) in stratDict.items()])]
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    ficNBD={}
+    reiNBD={}
+    couNBD={}
+    for bidder in allBidders:
+        r1Bid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        ficNBD[bidder]=r1Bid
+        reiNBD[bidder]=r1Bid
+        couNBD[bidder]=r1Bid
+            
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## Create a payoff dictionary of each bidder in each round
+    poDict={}
+    for bidder in allBidders:
+        poDict[bidder]=[]
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+        allRecordDict[bidder+'_strat']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+        
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    ficEstDict={}
+    for bidder in allBidders:
+        ficEstDict[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}    
+
+    ## fixed bidders for each loop 
+    choosen=set(np.random.choice(allBidders,5,replace=False))
+
+    count_round=0
+    while count_round<n_round:        
+        
+       
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                allRecordDict[bidder+'_strat'].append('NA')
+              
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            strat=stratDict[bidder]
+            if strat=='F':
+                bid=ficNBD[bidder]
+            elif strat=='R':
+                bid=reiNBD[bidder]
+            else:
+                bid=couNBD[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+            allRecordDict[bidder+'_strat'].append(strat)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        ## calculate revenue, efficiency, vcg revenue, vcg efficiency,
+        ##   optimal revenue of the round
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=myround(0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4),2)
+        effvcg=myround(revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4,2)
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)
+        allRecordDict['revopt'].append(revvcg*2)
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')  
+
+        ## update poDict for this round.
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            rank=bidList.index(tup)+1
+            if rank==1:
+                pr=bidList[1][1]
+                po=myround((value-pr)*click1,2)
+            elif rank==2:
+                pr=bidList[2][1]
+                po=myround((value-pr)*click2,2)
+            elif rank==3:
+                pr=bidList[3][1]
+                po=myround((value-pr)*click3,2)
+            elif rank==4:
+                pr=bidList[4][1]
+                po=myround((value-pr)*click4,2)
+            else:
+                po=0
+            poDict[bidder].append(po)
+        
+        ficEstDict=ficLearning_ful(allBidders,bidList,ficEstDict)
+        ficNBD=ficUpdating(bidList,valueDict,ficEstDict,choosenCountDict,ficNBD)
+        reiNBD=reiUpdating(allBidders,valueDict,choosenCountDict,bidDict,poDict,reiNBD)
+        couNBD=couUpdating(bidList,valueDict,choosenCountDict,couNBD)
+        
+        ## if current payoff is 5% less than prior payoff, change strategy
+        for bidders in choosen:
+            strat=stratDict[bidder]
+            if len(poDict[bidder])>2:
+                if poDict[bidder][-1]<0.95*poDict[bidder][-2]:
+                    ## remove strat 'R'
+                    strat=random.sample({'F','C'}-set(strat),1)[0]
+                    stratDict[bidder]=strat
+            
+        count_round+=1
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+        
+    
+    
+    count_loop+=1
+
+book.save('all_in_one_ff_VALUE100100.xls')        
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+########################################################################################################################################
+
+Mixed strategies. Fixed bidders. No info.
+revised on 2016-07-30. Add decay rate and smoothing factor
+revised on 2016-08-30, remove the reinforcement strategy
+revised on 2016-09-10, change excel output form
+"""
+
+import numpy as np, xlwt, xlrd, random
+
+### def smoothing factor and decay rate
+## define smoothing factor
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+
+def ficLearning_non (allBidders,a_bidList,a_ficEstDict):
+    '''fictitious play learning; no information'''
+    
+    tempD={}    
+    for bidder in allBidders:
+        tempD[bidder]={i:'NA' for i in allBidders}
+    ##get bidders by their ranks in bidList
+    bidderNo1=a_bidList[0][0]
+    bidderNo2=a_bidList[1][0]
+    bidderNo3=a_bidList[2][0]
+    bidderNo4=a_bidList[3][0]
+    bidderNo5=a_bidList[4][0]
+
+    for tup in a_bidList:
+        bidder=tup[0]
+        bid=tup[1]
+        rank=a_bidList.index(tup)+1
+        indiEstDict=tempD[bidder]
+        if rank==1:
+            est01=bid
+            est02=a_bidList[1][1]
+            d=myround(est01-est02,2)
+            est03=myround(est02-d,2) 
+            if est03<0.1:
+                est03=0.1
+            est04=myround(est03-d,2)
+            if est04<0.1:
+                est04=0.1
+            est05=myround(est04-d,2)
+            if est05<0.1:
+                est05=0.1
+            
+        
+        elif rank==2:
+            est02=bid ##known info
+            est03=a_bidList[2][1] ##known info
+            d=myround(est02-est03,2)
+            est01=myround(est02+d,2) ##guess 
+            if est01<0.1:
+                est01=0.1
+            est04=myround(est03-d,2)
+            if est04<0.1:
+                est04=0.1
+            est05=myround(est04-d,2)
+            if est05<0.1:
+                est05=0.1
+            
+        elif rank==3:
+            est03=bid
+            est04=a_bidList[3][1]
+            d=myround(est03-est04,2)            
+            est02=myround(est03+d,2) 
+            if est02<0.1:
+                est02=0.1
+            est01=myround(est02+d,2)
+            if est01<0.1:
+                est01=0.1
+            est05=myround(est04-d,2)
+            if est05<0.1:
+                est05=0.1
+            
+        elif rank==4:
+            est04=bid
+            est05=a_bidList[4][1]
+            d=myround(est04-est05,2)
+            est03=myround(est04+d,2)
+            if est03<0.1:
+                est03=0.1
+            est02=myround(est03+d,2)
+            if est02<0.1:
+                est02=0.1
+            est01=myround(est02+d,2)
+            if est01<0.1:
+                est01=0.1
+            
+        else: #the bidder ranked fifth.
+            est05=bid
+            d=abs(myround(est05-0.1,2))
+            est04=myround(est05+d,2)
+            est03=myround(est04+d,2)
+            est02=myround(est03+d,2)
+            est01=myround(est02+d,2)
+        tempL=sorted([est01,est02,est03,est04,est05],reverse=True)    
+        indiEstDict.update({bidderNo1:tempL[0],bidderNo2:tempL[1],bidderNo3:tempL[2],\
+                           bidderNo4:tempL[3],bidderNo5:tempL[4]})            
+        tempD.update({bidder:indiEstDict}) 
+        
+    for i in a_ficEstDict:
+        for j in a_ficEstDict[i]:
+            if a_ficEstDict[i][j]=='NA':
+                newEst=tempD[i][j]
+            else:
+                if tempD[i][j]=='NA':
+                    newEst=a_ficEstDict[i][j]
+                else:
+                    ##weighted average of two rounds. weighted by smoothing factor
+                    newEst=myround((1-sf)*a_ficEstDict[i][j]+sf*tempD[i][j],2)
+            a_ficEstDict[i].update({j:newEst})
+    
+    return a_ficEstDict
+
+def ficUpdating (a_bidList,a_valueDict,a_ficEstDict,a_choosenCountDict,a_ficNBD):
+    '''fictious play updating'''
+    for tup in a_bidList:
+        bidder=tup[0]
+        value=a_valueDict[bidder]
+        temp=sorted([(k,v) for k,v in a_ficEstDict[bidder].items() \
+            if type(v)==float],key=lambda est: est[-1], reverse=True)
+        estList=[tup[0] for tup in temp]
+        estRank=estList.index(bidder)+1
+        if a_choosenCountDict[bidder]<2:
+            nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        else:
+            if estRank in {1,len(estList)}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+        if nextBid>value:
+            nextBid=myround(value-0.5,2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_ficNBD[bidder]=nextBid  
+    
+    return a_ficNBD
+
+def reiUpdating(a_allBiddersList,a_valueDict,a_choosenCountDict,a_bidDict,a_poDict,a_reiNBD):
+
+    for bidder in a_allBiddersList:
+        value=a_valueDict[bidder]
+        choosenCount=a_choosenCountDict[bidder]
+        ## For the first 2 rounds, bids are generated from
+        ##   uniform(0.1,value)
+        if choosenCount<2:
+            nextBid=myround(np.random.uniform(0.1,value),2)
+        ## after two rounds, use current payoff and prior round payoff
+        ##  to generate bid.    
+        else:
+            curPo=a_poDict[bidder][-1]
+            priPo=a_poDict[bidder][-2]
+            curBid=a_bidDict[bidder][-1]
+            if curPo<0.95*priPo:
+                if curBid<0.95*value:
+                    nextBid=myround((1.05*curBid),2)
+                else:
+                    nextBid=myround(value,2)
+            else:
+                nextBid=curBid
+        a_reiNBD[bidder]=nextBid
+    return a_reiNBD
+
+def couUpdating(a_bidList,a_valueDict,a_choosenCountDict,a_couNBD):
+    for tup in a_bidList:
+        bidder=tup[0]
+        rank=a_bidList.index(tup)+1
+        value=a_valueDict[bidder]
+        if a_choosenCountDict[bidder]>1:
+            if rank in {1,5}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-a_bidList[rank][1]),2)
+        else:
+            nextBid=myround(np.random.uniform(0,value),2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_couNBD[bidder]=nextBid
+    return a_couNBD
+
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+
+    ## randomly assign one of three strategies to each bidder and create a
+    ## stratDict.
+    stratDict={}
+    for bidder in allBidders:
+        ## change range from (1.0,4.0) to (1.0,3.0) 
+        n_strat=int(np.random.uniform(1.0,3.0))
+        if n_strat==1:
+            strat='F'
+        ## remove strat R
+#        elif n_strat==2:
+#            strat='R'
+        else:
+            strat='C'
+        stratDict[bidder]=strat
+    
+    allStrats=[tup[1] for tup in sorted([(k,v) for (k,v) in stratDict.items()])]
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    ficNBD={}
+    reiNBD={}
+    couNBD={}
+    for bidder in allBidders:
+        r1Bid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        ficNBD[bidder]=r1Bid
+        reiNBD[bidder]=r1Bid
+        couNBD[bidder]=r1Bid
+    
+#    iniBidDict={}
+#    for bidder in allBidders:
+#        bid1=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+#        bid2=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+#        iniBidDict.update({bidder:(bid1,bid2)})
+    
+    
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## Create a payoff dictionary of each bidder in each round
+    poDict={}
+    for bidder in allBidders:
+        poDict[bidder]=[]
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+        allRecordDict[bidder+'_strat']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+        
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    ficEstDict={}
+    for bidder in allBidders:
+        ficEstDict[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}
+    
+    ##for each loop, bidders are fixed
+    choosen=set(np.random.choice(allBidders,5,replace=False))
+
+    count_round=0
+    while count_round<n_round:        
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                allRecordDict[bidder+'_strat'].append('NA')
+              
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            strat=stratDict[bidder]
+            if strat=='F':
+                bid=ficNBD[bidder]
+            elif strat=='R':
+                bid=reiNBD[bidder]
+            else:
+                bid=couNBD[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+            allRecordDict[bidder+'_strat'].append(strat)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        ## calculate revenue, efficiency, vcg revenue, vcg efficiency,
+        ##   optimal revenue of the round
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=myround(0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4),2)
+        effvcg=myround(revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4,2)
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)
+        allRecordDict['revopt'].append(revvcg*2)
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')  
+
+        ## update poDict for this round.
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            rank=bidList.index(tup)+1
+            if rank==1:
+                pr=bidList[1][1]
+                po=myround((value-pr)*click1,2)
+            elif rank==2:
+                pr=bidList[2][1]
+                po=myround((value-pr)*click2,2)
+            elif rank==3:
+                pr=bidList[3][1]
+                po=myround((value-pr)*click3,2)
+            elif rank==4:
+                pr=bidList[4][1]
+                po=myround((value-pr)*click4,2)
+            else:
+                po=0
+            poDict[bidder].append(po)
+        
+        ficEstDict=ficLearning_non(allBidders,bidList,ficEstDict)
+        ficNBD=ficUpdating(bidList,valueDict,ficEstDict,choosenCountDict,ficNBD)
+        reiNBD=reiUpdating(allBidders,valueDict,choosenCountDict,bidDict,poDict,reiNBD)
+        couNBD=couUpdating(bidList,valueDict,choosenCountDict,couNBD)
+        
+        ## if current payoff is 5% less than prior payoff, change strategy
+        for bidders in choosen:
+            strat=stratDict[bidder]
+            if len(poDict[bidder])>2:
+                if poDict[bidder][-1]<0.95*poDict[bidder][-2]:
+                    ## remove strat 'R'
+                    strat=random.sample({'F','C'}-set(strat),1)[0]
+                    stratDict[bidder]=strat
+            
+        count_round+=1
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    
+    count_loop+=1
+
+book.save('all_in_one_fn_VALUE100100.xls')        
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+
+########################################################################################################################################
+
+All in one. Fixed bidders. Partial info.
+
+revised on 2016-07-30. Add decay rate and smoothing factor
+revised on 2016-08-30, remove the reinforcement strategy
+revised on 2016-09-10, change excel output form
+"""
+
+import numpy as np, xlwt, xlrd, math,random
+
+### def smoothing factor and decay rate
+## define smoothing factor
+sf=0
+
+##define decay rate
+decay=0
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+
+def ficLearning_par (allBidders,a_bidList,a_ficEstDict):
+    '''fictitious play learning; partial information'''
+    
+    tempD={}    
+    for bidder in allBidders:
+        tempD[bidder]={i:'NA' for i in allBidders}
+    ##get bidders by their ranks in bidList
+    bidderNo1=a_bidList[0][0]
+    bidderNo2=a_bidList[1][0]
+    bidderNo3=a_bidList[2][0]
+    bidderNo4=a_bidList[3][0]
+    bidderNo5=a_bidList[4][0]
+
+    ## calculate mean and std of bids
+    m=myround(np.mean([tup[-1] for tup in a_bidList]),2)
+    s=myround(np.std([tup[-1] for tup in a_bidList]),2)
+
+    for tup in a_bidList:
+        bidder=tup[0]
+        bid=tup[1]
+        rank=a_bidList.index(tup)+1
+        indiEstDict=tempD[bidder]
+        if rank==1:
+            est01=bid
+            est02=a_bidList[1][1]
+            est03=myround(est02-s,2) ## guess by using second bid minus one S.D.
+            if est03<0.1:
+                est03=0.1
+            x=5*m-est01-est02-est03
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est01-m)**2+(est02-m)**2+(est03-m)**2
+            if b**2>8*c:
+                est04=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est04=myround(-b/4,2)
+            if est04<0.1:
+                est04=0.1
+            est05=myround(x-est04,2)
+            if est05<0.1:
+                est05=0.1
+            
+        
+        elif rank==2:
+            est02=bid ##known info
+            est03=a_bidList[2][1] ##known info
+            est01=myround(est02+s,2) ##guess 
+            if est01<0.1:
+                est01=0.1
+            x=5*m-est01-est02-est03
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est01-m)**2+(est02-m)**2+(est03-m)**2
+            if b**2>8*c:
+                est04=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est04=myround(-b/4,2)
+            if est04<0.1:
+                est04=0.1
+            est05=myround(x-est04,2)
+            if est05<0.1:
+                est05=0.1
+            
+        elif rank==3:
+            est03=bid
+            est04=a_bidList[3][1]
+            est02=myround(est03+s,2) ##guess
+            if est02<0.1:
+                est02=0.1
+            x=5*m-est02-est03-est04
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est02-m)**2+(est03-m)**2+(est04-m)**2
+            if b**2>8*c:
+                est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est01=myround(-b/4,2)
+            if est01<0.1:
+                est01=0.1
+            est05=myround(x-est01,2)
+            if est05<0.1:
+                est05=0.1
+            
+        elif rank==4:
+            est04=bid
+            est05=a_bidList[4][1]
+            est03=myround(est04+s,2) ## guess
+            if est03<0.1:
+                est03=0.1
+            x=5*m-est03-est04-est05
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est03-m)**2+(est04-m)**2+(est05-m)**2
+            if b**2>8*c:
+                est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est01=myround(-b/4,2)
+            if est01<0.1:
+                est01=0.1
+            est02=myround(x-est01,2)
+            if est02<0.1:
+                est02=0.1
+            
+        else: #the bidder ranked fifth. Need to make two guesses.
+            est05=bid
+            est03=m #guess
+            if est03<0.1:
+                est03=0.1
+            est04=myround((est03+est05)/2,2) ##another guess
+            if est04<0.1:
+                est04=0.1        
+            x=5*m-est03-est04-est05
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est03-m)**2+(est04-m)**2+(est05-m)**2
+            if b**2>8*c:
+                est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est01=myround(-b/4,2)
+            if est01<0.1:
+                est01=0.1
+            est02=myround(x-est01,2)
+            if est02<0.1:
+                est02=0.1
+        tempL=sorted([est01,est02,est03,est04,est05],reverse=True)    
+        indiEstDict.update({bidderNo1:tempL[0],bidderNo2:tempL[1],bidderNo3:tempL[2],\
+                           bidderNo4:tempL[3],bidderNo5:tempL[4]})            
+        tempD.update({bidder:indiEstDict}) 
+        
+    for i in a_ficEstDict:
+        for j in a_ficEstDict[i]:
+            if a_ficEstDict[i][j]=='NA':
+                newEst=tempD[i][j]
+            else:
+                if tempD[i][j]=='NA':
+                    newEst=a_ficEstDict[i][j]
+                else:
+                    ## weighted with smoothing factor
+                    newEst=myround((1-sf)*a_ficEstDict[i][j]+sf*tempD[i][j],2)
+            a_ficEstDict[i].update({j:newEst})
+    
+    return a_ficEstDict
+
+def ficUpdating (a_bidList,a_valueDict,a_ficEstDict,a_choosenCountDict,a_ficNBD):
+    '''fictious play updating'''
+    for tup in a_bidList:
+        bidder=tup[0]
+        value=a_valueDict[bidder]
+        temp=sorted([(k,v) for k,v in a_ficEstDict[bidder].items() \
+            if type(v)==float],key=lambda est: est[-1], reverse=True)
+        estList=[tup[0] for tup in temp]
+        estRank=estList.index(bidder)+1
+        if a_choosenCountDict[bidder]<2:
+            nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        else:
+            if estRank in {1,len(estList)}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+        if nextBid>value:
+            nextBid=myround(value-0.5,2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_ficNBD[bidder]=nextBid  
+    
+    return a_ficNBD
+
+def reiUpdating(a_allBiddersList,a_valueDict,a_choosenCountDict,a_bidDict,a_poDict,a_reiNBD):
+
+    for bidder in a_allBiddersList:
+        value=a_valueDict[bidder]
+        choosenCount=a_choosenCountDict[bidder]
+        ## For the first 2 rounds, bids are generated from
+        ##   uniform(0.1,value)
+        if choosenCount<2:
+            nextBid=myround(np.random.uniform(0.1,value),2)
+        ## after two rounds, use current payoff and prior round payoff
+        ##  to generate bid.    
+        else:
+            curPo=a_poDict[bidder][-1]
+            priPo=a_poDict[bidder][-2]
+            curBid=a_bidDict[bidder][-1]
+            if curPo<0.95*priPo:
+                if curBid<0.95*value:
+                    nextBid=myround((1.05*curBid),2)
+                else:
+                    nextBid=myround(value,2)
+            else:
+                nextBid=curBid
+        a_reiNBD[bidder]=nextBid
+    return a_reiNBD
+
+def couUpdating(a_bidList,a_valueDict,a_choosenCountDict,a_couNBD):
+    for tup in a_bidList:
+        bidder=tup[0]
+        rank=a_bidList.index(tup)+1
+        value=a_valueDict[bidder]
+        if a_choosenCountDict[bidder]>1:
+            if rank in {1,5}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-a_bidList[rank][1]),2)
+        else:
+            nextBid=myround(np.random.uniform(0,value),2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_couNBD[bidder]=nextBid
+    return a_couNBD
+
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+
+    ## randomly assign one of three strategies to each bidder and create a
+    ## stratDict.
+    stratDict={}
+    for bidder in allBidders:
+        ## change range from (1.0,4.0) to (1.0,3.0)
+        n_strat=int(np.random.uniform(1.0,3.0))
+        if n_strat==1:
+            strat='F'
+        ## remove strat=='R'
+#        elif n_strat==2:
+#            strat='R'
+        else:
+            strat='C'
+        stratDict[bidder]=strat
+    
+    allStrats=[tup[1] for tup in sorted([(k,v) for (k,v) in stratDict.items()])]
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    ficNBD={}
+    reiNBD={}
+    couNBD={}
+    for bidder in allBidders:
+        r1Bid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        ficNBD[bidder]=r1Bid
+        reiNBD[bidder]=r1Bid
+        couNBD[bidder]=r1Bid      
+    
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## Create a payoff dictionary of each bidder in each round
+    poDict={}
+    for bidder in allBidders:
+        poDict[bidder]=[]
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+        allRecordDict[bidder+'_strat']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+        
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    ficEstDict={}
+    for bidder in allBidders:
+        ficEstDict[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}
+
+    choosen=set(np.random.choice(allBidders,5,replace=False))
+        
+    count_round=0
+    while count_round<n_round:        
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                allRecordDict[bidder+'_strat'].append('NA')
+              
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            strat=stratDict[bidder]
+            if strat=='F':
+                bid=ficNBD[bidder]
+            elif strat=='R':
+                bid=reiNBD[bidder]
+            else:
+                bid=couNBD[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+            allRecordDict[bidder+'_strat'].append(strat)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        ## calculate revenue, efficiency, vcg revenue, vcg efficiency,
+        ##   optimal revenue of the round
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=myround(0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4),2)
+        effvcg=myround(revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4,2)
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)
+        allRecordDict['revopt'].append(revvcg*2)
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')  
+
+        ## update poDict for this round.
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            rank=bidList.index(tup)+1
+            if rank==1:
+                pr=bidList[1][1]
+                po=myround((value-pr)*click1,2)
+            elif rank==2:
+                pr=bidList[2][1]
+                po=myround((value-pr)*click2,2)
+            elif rank==3:
+                pr=bidList[3][1]
+                po=myround((value-pr)*click3,2)
+            elif rank==4:
+                pr=bidList[4][1]
+                po=myround((value-pr)*click4,2)
+            else:
+                po=0
+            poDict[bidder].append(po)
+        
+        ficEstDict=ficLearning_par(allBidders,bidList,ficEstDict)
+        ficNBD=ficUpdating(bidList,valueDict,ficEstDict,choosenCountDict,ficNBD)
+        reiNBD=reiUpdating(allBidders,valueDict,choosenCountDict,bidDict,poDict,reiNBD)
+        couNBD=couUpdating(bidList,valueDict,choosenCountDict,couNBD)
+        
+        ## if current payoff is 5% less than prior payoff, change strategy
+        for bidders in choosen:
+            strat=stratDict[bidder]
+            if len(poDict[bidder])>2:
+                if poDict[bidder][-1]<0.95*poDict[bidder][-2]:
+                    ## remove strat 'R'
+                    strat=random.sample({'F','C'}-set(strat),1)[0]
+                    stratDict[bidder]=strat
+            
+        count_round+=1
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    count_loop+=1
+
+book.save('all_in_one_fp_VALUE0000.xls')        
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+########################################################################################################################################
+
+
+stochastic entry, full info (Only choosen bidders of that round know these info)
+revised on 2016-07-30. Add decay rate and smoothing factor
+revised on 2016-08-30, remove the reinforcement strategy
+revised on 2016-09-10, change excel output form
+"""
+
+import numpy as np, xlwt, xlrd, random
+
+### def smoothing factor and decay rate
+## define smoothing factor. sf * est of t-1, (1-sf)* est of t-2
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+
+def ficLearning_ful (allBidders,a_bidList,a_ficEstDict):
+    '''fictitious play learning; full information'''
+    
+    tempD={}    
+    for bidder in allBidders:
+        tempD[bidder]={i:'NA' for i in allBidders}
+    
+    indiEstDict={i:'NA' for i in allBidders}
+    for tup in a_bidList:
+        bidder=tup[0]
+        bid=tup[1]
+        indiEstDict.update({bidder:bid})
+    
+    for tup in a_bidList:
+        bidder=tup[0]
+        tempD.update({bidder:indiEstDict})
+                   
+    for i in a_ficEstDict:
+        for j in a_ficEstDict[i]:
+            if a_ficEstDict[i][j]=='NA':
+                newEst=tempD[i][j]
+            else:
+                if tempD[i][j]=='NA':
+                    newEst=a_ficEstDict[i][j]
+                else:
+                    ##weighted average of two rounds. weighted by smoothing factor
+                    newEst=myround((1-sf)*a_ficEstDict[i][j]+sf*tempD[i][j],2)
+            a_ficEstDict[i].update({j:newEst})
+    
+    return a_ficEstDict
+
+def ficUpdating (a_bidList,a_valueDict,a_ficEstDict,a_choosenCountDict,a_ficNBD):
+    '''fictious play updating'''
+    for tup in a_bidList:
+        bidder=tup[0]
+        value=a_valueDict[bidder]
+        temp=sorted([(k,v) for k,v in a_ficEstDict[bidder].items() \
+            if type(v)==float],key=lambda est: est[-1], reverse=True)
+        estList=[tup[0] for tup in temp]
+        estRank=estList.index(bidder)+1
+        if a_choosenCountDict[bidder]<2:
+            nextBid=myround(np.random.uniform(0.1,a_valueDict[bidder]),2)
+        else:
+            if estRank in {1,len(estList)}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+        if nextBid>value:
+            nextBid=myround(value-0.5,2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_ficNBD[bidder]=nextBid  
+    
+    return a_ficNBD
+
+def reiUpdating(a_allBiddersList,a_valueDict,a_choosenCountDict,a_bidDict,a_poDict,a_reiNBD):
+
+    for bidder in a_allBiddersList:
+        value=a_valueDict[bidder]
+        choosenCount=a_choosenCountDict[bidder]
+        ## For the first 2 rounds, bids are generated from
+        ##   uniform(0.1,value)
+        if choosenCount<2:
+            nextBid=myround(np.random.uniform(0.1,value),2)
+        ## after two rounds, use current payoff and prior round payoff
+        ##  to generate bid.    
+        else:
+            curPo=a_poDict[bidder][-1]
+            priPo=a_poDict[bidder][-2]
+            curBid=a_bidDict[bidder][-1]
+            if curPo<0.95*priPo:
+                if curBid<0.95*value:
+                    nextBid=myround((1.05*curBid),2)
+                else:
+                    nextBid=myround(value,2)
+            else:
+                nextBid=curBid
+        a_reiNBD[bidder]=nextBid
+    return a_reiNBD
+
+def couUpdating(a_bidList,a_valueDict,a_choosenCountDict,a_couNBD):
+    for tup in a_bidList:
+        bidder=tup[0]
+        rank=a_bidList.index(tup)+1
+        value=a_valueDict[bidder]
+        if a_choosenCountDict[bidder]>1:
+            if rank in {1,5}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-a_bidList[rank][1]),2)
+        else:
+            nextBid=myround(np.random.uniform(0,value),2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_couNBD[bidder]=nextBid
+    return a_couNBD
+
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+
+    ## randomly assign one of three strategies to each bidder and create a
+    ## stratDict.
+    stratDict={}
+    for bidder in allBidders:
+        ## change the range from (1.0,4.0) to (1.0,3.0)
+        n_strat=int(np.random.uniform(1.0,3.0))
+        if n_strat==1:
+            strat='F'
+        ##remove strat=='R'
+#        elif n_strat==2:
+#            strat='R'
+        else:
+            strat='C'
+        stratDict[bidder]=strat
+    
+    allStrats=[tup[1] for tup in sorted([(k,v) for (k,v) in stratDict.items()])]
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    ficNBD={}
+    reiNBD={}
+    couNBD={}
+    for bidder in allBidders:
+        r1Bid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        ficNBD[bidder]=r1Bid
+        reiNBD[bidder]=r1Bid
+        couNBD[bidder]=r1Bid
+            
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## Create a payoff dictionary of each bidder in each round
+    poDict={}
+    for bidder in allBidders:
+        poDict[bidder]=[]
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+        allRecordDict[bidder+'_strat']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+        
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    ficEstDict={}
+    for bidder in allBidders:
+        ficEstDict[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}    
+
+    count_round=0
+    while count_round<n_round:        
+        
+        choosen=set(np.random.choice(allBidders,5,replace=False))
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                allRecordDict[bidder+'_strat'].append('NA')
+              
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            strat=stratDict[bidder]
+            if strat=='F':
+                bid=ficNBD[bidder]
+            elif strat=='R':
+                bid=reiNBD[bidder]
+            else:
+                bid=couNBD[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+            allRecordDict[bidder+'_strat'].append(strat)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        ## calculate revenue, efficiency, vcg revenue, vcg efficiency,
+        ##   optimal revenue of the round
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=myround(0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4),2)
+        effvcg=myround(revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4,2)
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)
+        allRecordDict['revopt'].append(revvcg*2)
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')  
+
+        ## update poDict for this round.
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            rank=bidList.index(tup)+1
+            if rank==1:
+                pr=bidList[1][1]
+                po=myround((value-pr)*click1,2)
+            elif rank==2:
+                pr=bidList[2][1]
+                po=myround((value-pr)*click2,2)
+            elif rank==3:
+                pr=bidList[3][1]
+                po=myround((value-pr)*click3,2)
+            elif rank==4:
+                pr=bidList[4][1]
+                po=myround((value-pr)*click4,2)
+            else:
+                po=0
+            poDict[bidder].append(po)
+        
+        ficEstDict=ficLearning_ful(allBidders,bidList,ficEstDict)
+        ficNBD=ficUpdating(bidList,valueDict,ficEstDict,choosenCountDict,ficNBD)
+        reiNBD=reiUpdating(allBidders,valueDict,choosenCountDict,bidDict,poDict,reiNBD)
+        couNBD=couUpdating(bidList,valueDict,choosenCountDict,couNBD)
+        
+        ## if current payoff is 5% less than prior payoff, change strategy
+        for bidders in choosen:
+            strat=stratDict[bidder]
+            if len(poDict[bidder])>2:
+                if poDict[bidder][-1]<0.95*poDict[bidder][-2]:
+                    ## remove strat 'R'
+                    strat=random.sample({'F','C'}-set(strat),1)[0]
+                    stratDict[bidder]=strat
+            
+        count_round+=1
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    
+    count_loop+=1
+
+book.save('all_in_one_sf_VALUE100100.xls')      
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''  
+
+
+########################################################################################################################################
+
+
+All in one. Stochastic entry. No info.
+revised on 2016-07-30. Add decay rate and smoothing factor
+revised on 2016-08-30, remove the reinforcement strategy
+revised on 2016-09-10, change excel output form
+"""
+
+import numpy as np, xlwt, xlrd, random
+
+### def smoothing factor and decay rate
+## define smoothing factor. sf * est of t-1, (1-sf)* est of t-2
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+
+def ficLearning_non (allBidders,a_bidList,a_ficEstDict):
+    '''fictitious play learning; no information'''
+    
+    tempD={}    
+    for bidder in allBidders:
+        tempD[bidder]={i:'NA' for i in allBidders}
+    ##get bidders by their ranks in bidList
+    bidderNo1=a_bidList[0][0]
+    bidderNo2=a_bidList[1][0]
+    bidderNo3=a_bidList[2][0]
+    bidderNo4=a_bidList[3][0]
+    bidderNo5=a_bidList[4][0]
+
+    for tup in a_bidList:
+        bidder=tup[0]
+        bid=tup[1]
+        rank=a_bidList.index(tup)+1
+        indiEstDict=tempD[bidder]
+        if rank==1:
+            est01=bid
+            est02=a_bidList[1][1]
+            d=myround(est01-est02,2)
+            est03=myround(est02-d,2) 
+            if est03<0.1:
+                est03=0.1
+            est04=myround(est03-d,2)
+            if est04<0.1:
+                est04=0.1
+            est05=myround(est04-d,2)
+            if est05<0.1:
+                est05=0.1
+            
+        
+        elif rank==2:
+            est02=bid ##known info
+            est03=a_bidList[2][1] ##known info
+            d=myround(est02-est03,2)
+            est01=myround(est02+d,2) ##guess 
+            if est01<0.1:
+                est01=0.1
+            est04=myround(est03-d,2)
+            if est04<0.1:
+                est04=0.1
+            est05=myround(est04-d,2)
+            if est05<0.1:
+                est05=0.1
+            
+        elif rank==3:
+            est03=bid
+            est04=a_bidList[3][1]
+            d=myround(est03-est04,2)            
+            est02=myround(est03+d,2) 
+            if est02<0.1:
+                est02=0.1
+            est01=myround(est02+d,2)
+            if est01<0.1:
+                est01=0.1
+            est05=myround(est04-d,2)
+            if est05<0.1:
+                est05=0.1
+            
+        elif rank==4:
+            est04=bid
+            est05=a_bidList[4][1]
+            d=myround(est04-est05,2)
+            est03=myround(est04+d,2)
+            if est03<0.1:
+                est03=0.1
+            est02=myround(est03+d,2)
+            if est02<0.1:
+                est02=0.1
+            est01=myround(est02+d,2)
+            if est01<0.1:
+                est01=0.1
+            
+        else: #the bidder ranked fifth.
+            est05=bid
+            d=abs(myround(est05-0.1,2))
+            est04=myround(est05+d,2)
+            est03=myround(est04+d,2)
+            est02=myround(est03+d,2)
+            est01=myround(est02+d,2)
+        tempL=sorted([est01,est02,est03,est04,est05],reverse=True)    
+        indiEstDict.update({bidderNo1:tempL[0],bidderNo2:tempL[1],bidderNo3:tempL[2],\
+                           bidderNo4:tempL[3],bidderNo5:tempL[4]})            
+        tempD.update({bidder:indiEstDict}) 
+        
+    for i in a_ficEstDict:
+        for j in a_ficEstDict[i]:
+            if a_ficEstDict[i][j]=='NA':
+                newEst=tempD[i][j]
+            else:
+                if tempD[i][j]=='NA':
+                    newEst=a_ficEstDict[i][j]
+                else:
+                    newEst=myround((1-sf)*a_ficEstDict[i][j]+sf*tempD[i][j],2)
+            a_ficEstDict[i].update({j:newEst})
+    
+    return a_ficEstDict
+
+def ficUpdating (a_bidList,a_valueDict,a_ficEstDict,a_choosenCountDict,a_ficNBD):
+    '''fictious play updating'''
+    for tup in a_bidList:
+        bidder=tup[0]
+        value=a_valueDict[bidder]
+        temp=sorted([(k,v) for k,v in a_ficEstDict[bidder].items() \
+            if type(v)==float],key=lambda est: est[-1], reverse=True)
+        estList=[tup[0] for tup in temp]
+        estRank=estList.index(bidder)+1
+        if a_choosenCountDict[bidder]<2:
+            nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        else:
+            if estRank in {1,len(estList)}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+        if nextBid>value:
+            nextBid=myround(value-0.5,2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_ficNBD[bidder]=nextBid  
+    
+    return a_ficNBD
+
+def reiUpdating(a_allBiddersList,a_valueDict,a_choosenCountDict,a_bidDict,a_poDict,a_reiNBD):
+
+    for bidder in a_allBiddersList:
+        value=a_valueDict[bidder]
+        choosenCount=a_choosenCountDict[bidder]
+        ## For the first 2 rounds, bids are generated from
+        ##   uniform(0.1,value)
+        if choosenCount<2:
+            nextBid=myround(np.random.uniform(0.1,value),2)
+        ## after two rounds, use current payoff and prior round payoff
+        ##  to generate bid.    
+        else:
+            curPo=a_poDict[bidder][-1]
+            priPo=a_poDict[bidder][-2]
+            curBid=a_bidDict[bidder][-1]
+            if curPo<0.95*priPo:
+                if curBid<0.95*value:
+                    nextBid=myround((1.05*curBid),2)
+                else:
+                    nextBid=myround(value,2)
+            else:
+                nextBid=curBid
+        a_reiNBD[bidder]=nextBid
+    return a_reiNBD
+
+def couUpdating(a_bidList,a_valueDict,a_choosenCountDict,a_couNBD):
+    for tup in a_bidList:
+        bidder=tup[0]
+        rank=a_bidList.index(tup)+1
+        value=a_valueDict[bidder]
+        if a_choosenCountDict[bidder]>1:
+            if rank in {1,5}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-a_bidList[rank][1]),2)
+        else:
+            nextBid=myround(np.random.uniform(0,value),2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_couNBD[bidder]=nextBid
+    return a_couNBD
+
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+
+    ## randomly assign one of three strategies to each bidder and create a
+    ## stratDict.
+    stratDict={}
+    for bidder in allBidders:
+        ## change range to (1.0,3.0)
+        n_strat=int(np.random.uniform(1.0,3.0))
+        if n_strat==1:
+            strat='F'
+        ## remove strat 'R'
+#        elif n_strat==2:
+#            strat='R'
+        else:
+            strat='C'
+        stratDict[bidder]=strat
+    
+    allStrats=[tup[1] for tup in sorted([(k,v) for (k,v) in stratDict.items()])]
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    ficNBD={}
+    reiNBD={}
+    couNBD={}
+    for bidder in allBidders:
+        r1Bid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        ficNBD[bidder]=r1Bid
+        reiNBD[bidder]=r1Bid
+        couNBD[bidder]=r1Bid
+    
+#    iniBidDict={}
+#    for bidder in allBidders:
+#        bid1=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+#        bid2=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+#        iniBidDict.update({bidder:(bid1,bid2)})
+    
+    
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## Create a payoff dictionary of each bidder in each round
+    poDict={}
+    for bidder in allBidders:
+        poDict[bidder]=[]
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+        allRecordDict[bidder+'_strat']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+        
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    ficEstDict={}
+    for bidder in allBidders:
+        ficEstDict[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}
+    
+    
+    ## Create another dictionary of estimated valuation of last round 
+    ## start from second round. Need to be reset to all 'NA' after each round.
+#    ficEstDict1={}
+#    for bidder in allBidders:
+#        ficEstDict1[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+#                          b7:'NA',b8:'NA', b9:'NA',b10:'NA'}
+
+    count_round=0
+    while count_round<n_round:        
+        
+        choosen=set(np.random.choice(allBidders,5,replace=False))
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                allRecordDict[bidder+'_strat'].append('NA')
+              
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            strat=stratDict[bidder]
+            if strat=='F':
+                bid=ficNBD[bidder]
+            elif strat=='R':
+                bid=reiNBD[bidder]
+            else:
+                bid=couNBD[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+            allRecordDict[bidder+'_strat'].append(strat)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        ## calculate revenue, efficiency, vcg revenue, vcg efficiency,
+        ##   optimal revenue of the round
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=myround(0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4),2)
+        effvcg=myround(revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4,2)
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)
+        allRecordDict['revopt'].append(revvcg*2)
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')  
+
+        ## update poDict for this round.
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            rank=bidList.index(tup)+1
+            if rank==1:
+                pr=bidList[1][1]
+                po=myround((value-pr)*click1,2)
+            elif rank==2:
+                pr=bidList[2][1]
+                po=myround((value-pr)*click2,2)
+            elif rank==3:
+                pr=bidList[3][1]
+                po=myround((value-pr)*click3,2)
+            elif rank==4:
+                pr=bidList[4][1]
+                po=myround((value-pr)*click4,2)
+            else:
+                po=0
+            poDict[bidder].append(po)
+        
+        ficEstDict=ficLearning_non(allBidders,bidList,ficEstDict)
+        ficNBD=ficUpdating(bidList,valueDict,ficEstDict,choosenCountDict,ficNBD)
+        reiNBD=reiUpdating(allBidders,valueDict,choosenCountDict,bidDict,poDict,reiNBD)
+        couNBD=couUpdating(bidList,valueDict,choosenCountDict,couNBD)
+        
+        ## if current payoff is 5% less than prior payoff, change strategy
+        for bidders in choosen:
+            strat=stratDict[bidder]
+            if len(poDict[bidder])>2:
+                if poDict[bidder][-1]<0.95*poDict[bidder][-2]:
+                    ## remove strat 'R'
+                    strat=random.sample({'F','C'}-set(strat),1)[0]
+                    stratDict[bidder]=strat
+            
+        count_round+=1
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    
+    count_loop+=1
+
+book.save('all_in_one_sn_VALUE100100.xls')        
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+########################################################################################################################################
+
+All in one. Stochastic entry. Partial info.
+revised on 2016-07-30. Add decay rate and smoothing factor
+revised on 2016-08-30, remove the reinforcement strategy
+revised on 2016-09-10, change excel output form
+"""
+
+import numpy as np, xlwt, xlrd, math,random
+
+### def smoothing factor and decay rate
+## define smoothing factor. sf * est of t-1, (1-sf)* est of t-2
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+
+def ficLearning_par (allBidders,a_bidList,a_ficEstDict):
+    '''fictitious play learning; partial information'''
+    
+    tempD={}    
+    for bidder in allBidders:
+        tempD[bidder]={i:'NA' for i in allBidders}
+    ##get bidders by their ranks in bidList
+    bidderNo1=a_bidList[0][0]
+    bidderNo2=a_bidList[1][0]
+    bidderNo3=a_bidList[2][0]
+    bidderNo4=a_bidList[3][0]
+    bidderNo5=a_bidList[4][0]
+
+    ## calculate mean and std of bids
+    m=myround(np.mean([tup[-1] for tup in a_bidList]),2)
+    s=myround(np.std([tup[-1] for tup in a_bidList]),2)
+
+    for tup in a_bidList:
+        bidder=tup[0]
+        bid=tup[1]
+        rank=a_bidList.index(tup)+1
+        indiEstDict=tempD[bidder]
+        if rank==1:
+            est01=bid
+            est02=a_bidList[1][1]
+            est03=myround(est02-s,2) ## guess by using second bid minus one S.D.
+            if est03<0.1:
+                est03=0.1
+            x=5*m-est01-est02-est03
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est01-m)**2+(est02-m)**2+(est03-m)**2
+            if b**2>8*c:
+                est04=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est04=myround(-b/4,2)
+            if est04<0.1:
+                est04=0.1
+            est05=myround(x-est04,2)
+            if est05<0.1:
+                est05=0.1
+            
+        
+        elif rank==2:
+            est02=bid ##known info
+            est03=a_bidList[2][1] ##known info
+            est01=myround(est02+s,2) ##guess 
+            if est01<0.1:
+                est01=0.1
+            x=5*m-est01-est02-est03
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est01-m)**2+(est02-m)**2+(est03-m)**2
+            if b**2>8*c:
+                est04=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est04=myround(-b/4,2)
+            if est04<0.1:
+                est04=0.1
+            est05=myround(x-est04,2)
+            if est05<0.1:
+                est05=0.1
+            
+        elif rank==3:
+            est03=bid
+            est04=a_bidList[3][1]
+            est02=myround(est03+s,2) ##guess
+            if est02<0.1:
+                est02=0.1
+            x=5*m-est02-est03-est04
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est02-m)**2+(est03-m)**2+(est04-m)**2
+            if b**2>8*c:
+                est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est01=myround(-b/4,2)
+            if est01<0.1:
+                est01=0.1
+            est05=myround(x-est01,2)
+            if est05<0.1:
+                est05=0.1
+            
+        elif rank==4:
+            est04=bid
+            est05=a_bidList[4][1]
+            est03=myround(est04+s,2) ## guess
+            if est03<0.1:
+                est03=0.1
+            x=5*m-est03-est04-est05
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est03-m)**2+(est04-m)**2+(est05-m)**2
+            if b**2>8*c:
+                est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est01=myround(-b/4,2)
+            if est01<0.1:
+                est01=0.1
+            est02=myround(x-est01,2)
+            if est02<0.1:
+                est02=0.1
+            
+        else: #the bidder ranked fifth. Need to make two guesses.
+            est05=bid
+            est03=m #guess
+            if est03<0.1:
+                est03=0.1
+            est04=myround((est03+est05)/2,2) ##another guess
+            if est04<0.1:
+                est04=0.1        
+            x=5*m-est03-est04-est05
+            b=-2*x
+            c=2*m**2+x**2-2*m*x-5*s**2+(est03-m)**2+(est04-m)**2+(est05-m)**2
+            if b**2>8*c:
+                est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+            else:
+                est01=myround(-b/4,2)
+            if est01<0.1:
+                est01=0.1
+            est02=myround(x-est01,2)
+            if est02<0.1:
+                est02=0.1
+        tempL=sorted([est01,est02,est03,est04,est05],reverse=True)    
+        indiEstDict.update({bidderNo1:tempL[0],bidderNo2:tempL[1],bidderNo3:tempL[2],\
+                           bidderNo4:tempL[3],bidderNo5:tempL[4]})            
+        tempD.update({bidder:indiEstDict}) 
+        
+    for i in a_ficEstDict:
+        for j in a_ficEstDict[i]:
+            if a_ficEstDict[i][j]=='NA':
+                newEst=tempD[i][j]
+            else:
+                if tempD[i][j]=='NA':
+                    newEst=a_ficEstDict[i][j]
+                else:
+                    ##weighted average of two rounds. weighted by smoothing factor
+                    ## tempD[i][j]is bid of t-1, a_ficEstDict[i][j]is est of t-2 
+                    newEst=myround((1-sf)*a_ficEstDict[i][j]+sf*tempD[i][j],2)
+            a_ficEstDict[i].update({j:newEst})
+    
+    return a_ficEstDict
+
+def ficUpdating (a_bidList,a_valueDict,a_ficEstDict,a_choosenCountDict,a_ficNBD):
+    '''fictious play updating'''
+    for tup in a_bidList:
+        bidder=tup[0]
+        value=a_valueDict[bidder]
+        temp=sorted([(k,v) for k,v in a_ficEstDict[bidder].items() \
+            if type(v)==float],key=lambda est: est[-1], reverse=True)
+        estList=[tup[0] for tup in temp]
+        estRank=estList.index(bidder)+1
+        if a_choosenCountDict[bidder]<2:
+            nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        else:
+            if estRank in {1,len(estList)}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+        if nextBid>value:
+            nextBid=myround(value-0.5,2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_ficNBD[bidder]=nextBid  
+    
+    return a_ficNBD
+
+def reiUpdating(a_allBiddersList,a_valueDict,a_choosenCountDict,a_bidDict,a_poDict,a_reiNBD):
+
+    for bidder in a_allBiddersList:
+        value=a_valueDict[bidder]
+        choosenCount=a_choosenCountDict[bidder]
+        ## For the first 2 rounds, bids are generated from
+        ##   uniform(0.1,value)
+        if choosenCount<2:
+            nextBid=myround(np.random.uniform(0.1,value),2)
+        ## after two rounds, use current payoff and prior round payoff
+        ##  to generate bid.    
+        else:
+            curPo=a_poDict[bidder][-1]
+            priPo=a_poDict[bidder][-2]
+            curBid=a_bidDict[bidder][-1]
+            if curPo<0.95*priPo:
+                if curBid<0.95*value:
+                    nextBid=myround((1.05*curBid),2)
+                else:
+                    nextBid=myround(value,2)
+            else:
+                nextBid=curBid
+        a_reiNBD[bidder]=nextBid
+    return a_reiNBD
+
+def couUpdating(a_bidList,a_valueDict,a_choosenCountDict,a_couNBD):
+    for tup in a_bidList:
+        bidder=tup[0]
+        rank=a_bidList.index(tup)+1
+        value=a_valueDict[bidder]
+        if a_choosenCountDict[bidder]>1:
+            if rank in {1,5}:
+                nextBid=myround(value,2)
+            else:
+                nextBid=myround(value-0.5*(value-a_bidList[rank][1]),2)
+        else:
+            nextBid=myround(np.random.uniform(0,value),2)
+        if nextBid<0.1:
+            nextBid=0.1
+        a_couNBD[bidder]=nextBid
+    return a_couNBD
+
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+
+    ## randomly assign one of three strategies to each bidder and create a
+    ## stratDict.
+    stratDict={}
+    for bidder in allBidders:
+        ## change range to (1.0,3.0)
+        n_strat=int(np.random.uniform(1.0,3.0))
+        if n_strat==1:
+            strat='F'
+        ## remove strat 'R'
+#        elif n_strat==2:
+#            strat='R'
+        else:
+            strat='C'
+        stratDict[bidder]=strat
+    
+    allStrats=[tup[1] for tup in sorted([(k,v) for (k,v) in stratDict.items()])]
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    ficNBD={}
+    reiNBD={}
+    couNBD={}
+    for bidder in allBidders:
+        r1Bid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        ficNBD[bidder]=r1Bid
+        reiNBD[bidder]=r1Bid
+        couNBD[bidder]=r1Bid
+            
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## Create a payoff dictionary of each bidder in each round
+    poDict={}
+    for bidder in allBidders:
+        poDict[bidder]=[]
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+        allRecordDict[bidder+'_strat']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+        
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    ficEstDict={}
+    for bidder in allBidders:
+        ficEstDict[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}
+        
+    count_round=0
+    while count_round<n_round:        
+        
+        choosen=set(np.random.choice(allBidders,5,replace=False))
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                allRecordDict[bidder+'_strat'].append('NA')
+              
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            strat=stratDict[bidder]
+            if strat=='F':
+                bid=ficNBD[bidder]
+            elif strat=='R':
+                bid=reiNBD[bidder]
+            else:
+                bid=couNBD[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+            allRecordDict[bidder+'_strat'].append(strat)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        ## calculate revenue, efficiency, vcg revenue, vcg efficiency,
+        ##   optimal revenue of the round
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=myround(0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4),2)
+        effvcg=myround(revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4,2)
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)
+        allRecordDict['revopt'].append(revvcg*2)
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')  
+
+        ## update poDict for this round.
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            rank=bidList.index(tup)+1
+            if rank==1:
+                pr=bidList[1][1]
+                po=myround((value-pr)*click1,2)
+            elif rank==2:
+                pr=bidList[2][1]
+                po=myround((value-pr)*click2,2)
+            elif rank==3:
+                pr=bidList[3][1]
+                po=myround((value-pr)*click3,2)
+            elif rank==4:
+                pr=bidList[4][1]
+                po=myround((value-pr)*click4,2)
+            else:
+                po=0
+            poDict[bidder].append(po)
+        
+        ficEstDict=ficLearning_par(allBidders,bidList,ficEstDict)
+        ficNBD=ficUpdating(bidList,valueDict,ficEstDict,choosenCountDict,ficNBD)
+        reiNBD=reiUpdating(allBidders,valueDict,choosenCountDict,bidDict,poDict,reiNBD)
+        couNBD=couUpdating(bidList,valueDict,choosenCountDict,couNBD)
+        
+        ## if current payoff is 5% less than prior payoff, change strategy
+        for bidders in choosen:
+            strat=stratDict[bidder]
+            if len(poDict[bidder])>2:
+                if poDict[bidder][-1]<0.95*poDict[bidder][-2]:
+                    ## remove strat 'R'
+                    strat=random.sample({'F','C'}-set(strat),1)[0]
+                    stratDict[bidder]=strat
+            
+        count_round+=1
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    
+    count_loop+=1
+
+book.save('all_in_one_sp_VALUE100100.xls')        
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+########################################################################################################################################
+
+
+"""Non Stochastic entry. Full information disclousure. Fictitious learning.
+1. Non Stochastic entry. In each round, 5 bidders bid for 4 slots.
+2. Use GSP mechanism.
+3. Bidders valuations: 10 to 50. A bidder never bid over his valuation. 
+4. In the first 2 rounds, bid is randomly generated from unif(0.1, valuation)
+    for each bidder.
+5. Full information disclosure. All bidders know all bids in all rounds.
+6. Fictitious learning. From round 3, bidders use Fictitious learning to update
+    their bid.
+"""
+"""
+decay rate and smoothing factor defined for sensitivity test
+2016-07-25
+change excel output, remove variables' names, put bidders' values aside
+2016-09-11
+"""
+
+import numpy as np,xlwt,xlrd
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+fixedBidders=set(np.random.choice(allBidders,5,replace=False))
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+
+## define smoothing factor
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+       
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    nextBidDict={}
+    for bidder in allBidders:
+        nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        nextBidDict.update({bidder:nextBid})
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]    
+    
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    estDict={}
+    for bidder in allBidders:
+        estDict[bidder]=None
+
+    count_round=0
+    while count_round<n_round:        
+
+        choosen=fixedBidders
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')        
+        
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            bid=nextBidDict[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+    
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')
+    
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)  
+    
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4)
+        effvcg=revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revopt'].append(2*revvcg)
+        
+        
+        ## Update estDict. The new estimate is the weighted average of old
+        ## estimate and current bid (weighted by smoothing factor sf). 
+        ## If the bidder has not been choosen, no estimate. If the bidder was 
+        ## choosen for only once, use his first bid as the estimate.
+        ## Create a estList to rank estimates for this round.
+        estList=[]
+        for bidder in choosen:
+            m=choosenCountDict[bidder]
+            if m==1:
+                est_new=bidDict[bidder][-1]
+            else:
+                est_new=myround((sf*estDict[bidder]+(1-sf)*bidDict[bidder][-1]),2)
+            estDict.update({bidder:est_new})
+            estTup=(bidder,est_new)
+            estList.append(estTup)
+        estList.sort(key=lambda est: est[-1], reverse=True)
+    
+        ## Update nextBidDict. If bidder not choosen in last round, no need to update;
+        ## Otherwise, if choosen count=1, next bid still random draw. If choosen count
+        ## >1, use fictitious play learning. If estimate ranks 1 or 5, next bid is valuation,
+        ## otherwise, next bid=value-0.5*(value-estimate of highest rival)
+        for tup in estList:
+            bidder=tup[0]
+            l=choosenCountDict[bidder]
+            value=valueDict[bidder]
+            rank=estList.index(tup)+1
+            if l==1:
+                nextBid=myround(np.random.uniform(0,valueDict[bidder]),2)
+            else:
+                if rank in {1,5}:
+                    nextBid=myround(value,2)
+                else:
+                    nextBid=myround(value-0.5*(value-estList[rank][-1]),2)
+            if nextBid<0.1:
+                nextBid=0.1
+            nextBidDict.update({bidder:nextBid})
+    
+        count_round+=1
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    
+    count_loop+=1
+
+book.save('FICAllFul_VALUE100100.xls')
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+########################################################################################################################################
+
+
+"""Non stochastic entry. No information disclousure. Fictitious learning.
+1. Selected bidders are fixed. 5 bid for 4 slots. 
+2. Use GSP mechanism.
+3. Bidders valuations: 10,20,30,40,50. 
+    A bidder never bid over his valuation. 
+4. In the first 2 rounds, bid is randomly generated from unif(0.1, valuation)
+    for each bidder.
+5. No information disclosure. All bidders know his own bid, bid of his next
+   highest rival (NHR). Ranks are public information.
+6. Fictitious learning. From round 3, bidders use Fictitious learning to update
+    their bid.
+"""
+"""
+decay rate and smoothing factor defined for sensitivity test
+2016-07-25
+change excel output, remove variables' names, put bidders' values aside
+2016-09-11
+"""
+
+import numpy as np,xlwt,xlrd
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+    
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+fixedBidders=set(np.random.choice(allBidders,5,replace=False))
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+
+## define smoothing factor
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+       
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    nextBidDict={}
+    for bidder in allBidders:
+        nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        nextBidDict.update({bidder:nextBid})
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]    
+
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    estDict0={}
+    for bidder in allBidders:
+        temp={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',b7:'NA',b8:'NA',\
+              b9:'NA',b10:'NA'}
+        estDict0.update({bidder:temp})
+    
+    ## Create another dictionary of estimated valuation of last round 
+    ## start from second round. Need to be reset to all 'NA' after each round.
+    estDict1={}
+    for bidder in allBidders:
+        temp={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',b7:'NA',b8:'NA',\
+              b9:'NA',b10:'NA'}
+        estDict1.update({bidder:temp})    
+    
+    count_round=0
+    while count_round<n_round:
+        choosen=fixedBidders
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            bid=nextBidDict[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+        
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')
+    
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)  
+    
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4)
+        effvcg=revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revopt'].append(2*revvcg)
+        
+        bidderNo1=bidList[0][0]
+        bidderNo2=bidList[1][0]
+        bidderNo3=bidList[2][0]
+        bidderNo4=bidList[3][0]
+        bidderNo5=bidList[4][0]
+    
+        for tup in bidList:
+            bidder=tup[0]
+            bid=tup[1]
+            rank=bidList.index(tup)+1
+            indiEstDict=estDict1[bidder]
+            if rank==1:
+                est01=bid
+                est02=bidList[1][1]
+                d=myround(est01-est02,2)
+                est03=myround(est02-d,2) 
+                if est03<0.1:
+                    est03=0.1
+                est04=myround(est03-d,2)
+                if est04<0.1:
+                    est04=0.1
+                est05=myround(est04-d,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            
+            elif rank==2:
+                est02=bid ##known info
+                est03=bidList[2][1] ##known info
+                d=myround(est02-est03,2)
+                est01=myround(est02+d,2) ##guess 
+                if est01<0.1:
+                    est01=0.1
+                est04=myround(est03-d,2)
+                if est04<0.1:
+                    est04=0.1
+                est05=myround(est04-d,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            elif rank==3:
+                est03=bid
+                est04=bidList[3][1]
+                d=myround(est03-est04,2)            
+                est02=myround(est03+d,2) 
+                if est02<0.1:
+                    est02=0.1
+                est01=myround(est02+d,2)
+                if est01<0.1:
+                    est01=0.1
+                est05=myround(est04-d,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            elif rank==4:
+                est04=bid
+                est05=bidList[4][1]
+                d=myround(est04-est05,2)
+                est03=myround(est04+d,2)
+                if est03<0.1:
+                    est03=0.1
+                est02=myround(est03+d,2)
+                if est02<0.1:
+                    est02=0.1
+                est01=myround(est02+d,2)
+                if est01<0.1:
+                    est01=0.1
+                
+            else: #the bidder ranked fifth.
+                est05=bid
+                d=abs(myround(est05-0.1,2))
+                est04=myround(est05+d,2)
+                est03=myround(est04+d,2)
+                est02=myround(est03+d,2)
+                est01=myround(est02+d,2)
+                
+            temp=sorted([est01,est02,est03,est04,est05],reverse=True)    
+            indiEstDict.update({bidderNo1:temp[0],bidderNo2:temp[1],\
+                bidderNo3:temp[2],bidderNo4:temp[3],bidderNo5:temp[4]})            
+            estDict1.update({bidder:indiEstDict}) 
+    
+        for i in estDict0:
+            for j in estDict0[i]:
+                if estDict0[i][j]=='NA':
+                    newEst=estDict1[i][j]
+                else:
+                    if estDict1[i][j]=='NA':
+                        newEst=estDict0[i][j]
+                    else:
+                        ##weighted by smoothing factor sf
+                        newEst=myround(sf*estDict0[i][j]+(1-sf)*estDict1[i][j],2)
+                estDict0[i].update({j:newEst})
+                
+        
+        for bidder in allBidders:
+            temp={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',b7:'NA',b8:'NA',\
+                  b9:'NA',b10:'NA'}
+            estDict1.update({bidder:temp})
+    
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            temp=sorted([(k,v) for k,v in estDict0[bidder].items() \
+                if type(v)==float],key=lambda est: est[-1], reverse=True)
+            estList=[tup[0] for tup in temp]
+            estRank=estList.index(bidder)+1
+            if choosenCountDict[bidder]<2:
+                nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+            else:
+                if estRank in {1,len(estList)}:
+                    nextBid=myround(value,2)
+                else:
+                    nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+            if nextBid>value:
+                nextBid=myround(value-0.5,2)
+            if nextBid<0.1:
+                nextBid=0.1
+            nextBidDict[bidder]=nextBid
+    
+        count_round+=1    
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+        
+    count_loop+=1
+
+book.save('FICAllNon_VALUE100100.xls')
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+
+#######################################################################################################################################
+
+
+"""Stochastic entry. Partial information disclousure. Fictitious learning.
+1. Stochastic entry. In each round, randomly draw 5 out of 10  bidders bid for 4 slots.
+2. Use GSP mechanism.
+3. Bidders valuations: 10 to 100. A bidder never bid over his valuation. 
+4. In the first 2 rounds, bid is randomly generated from unif(0.1, valuation)
+    for each bidder.
+5. Partial information disclosure. Bidders know his own bid and next highest
+   rival's bid and mean and standard deviation.
+6. Fictitious learning. From round 3, bidders use Fictitious learning to update
+    their bid.
+"""
+"""
+decay rate and smoothing factor defined for sensitivity test
+2016-07-25
+change excel output, remove variables' names, put bidders' values aside
+2016-09-11
+"""
+
+import numpy as np,xlwt,xlrd, math
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+    
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+fixedBidders=set(np.random.choice(allBidders,5,replace=False))
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+
+## define smoothing factor
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+       
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    nextBidDict={}
+    for bidder in allBidders:
+        nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        nextBidDict.update({bidder:nextBid})
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+        
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    estDict0={}
+    for bidder in allBidders:
+        estDict0[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}
+    
+    
+    ## Create another dictionary of estimated valuation of last round 
+    ## start from second round. Need to be reset to all 'NA' after each round.
+    estDict1={}
+    for bidder in allBidders:
+        estDict1[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA', b9:'NA',b10:'NA'} 
+    
+    count_round=0
+    while count_round<n_round:        
+        
+        choosen=fixedBidders
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            bid=nextBidDict[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        ## calculate revenue, efficiency, vcg revenue, vcg efficiency,
+        ##   optimal revenue of the round
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=myround(0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4),2)
+        effvcg=myround(revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4,2)
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)
+        allRecordDict['revopt'].append(revvcg*2)
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')        
+
+        bidderNo1=bidList[0][0]
+        bidderNo2=bidList[1][0]
+        bidderNo3=bidList[2][0]
+        bidderNo4=bidList[3][0]
+        bidderNo5=bidList[4][0]
+        
+        temp=[]
+        for tup in bidList:
+            temp.append(tup[-1])
+        m=myround(np.mean(temp),2)
+        s=myround(np.std(temp),2)
+        
+        for tup in bidList:
+            bidder=tup[0]
+            bid=tup[1]
+            rank=bidList.index(tup)+1
+            indiEstDict=estDict1[bidder]
+            if rank==1:
+                est01=bid
+                est02=bidList[1][1]
+                est03=myround(est02-s,2) ## guess by using second bid minus one S.D.
+                if est03<0.1:
+                    est03=0.1
+                x=5*m-est01-est02-est03
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est01-m)**2+(est02-m)**2+(est03-m)**2
+                if b**2>8*c:
+                    est04=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est04=myround(-b/4,2)
+                if est04<0.1:
+                    est04=0.1
+                est05=myround(x-est04,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            
+            elif rank==2:
+                est02=bid ##known info
+                est03=bidList[2][1] ##known info
+                est01=myround(est02+s,2) ##guess 
+                if est01<0.1:
+                    est01=0.1
+                x=5*m-est01-est02-est03
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est01-m)**2+(est02-m)**2+(est03-m)**2
+                if b**2>8*c:
+                    est04=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est04=myround(-b/4,2)
+                if est04<0.1:
+                    est04=0.1
+                est05=myround(x-est04,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            elif rank==3:
+                est03=bid
+                est04=bidList[3][1]
+                est02=myround(est03+s,2) ##guess
+                if est02<0.1:
+                    est02=0.1
+                x=5*m-est02-est03-est04
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est02-m)**2+(est03-m)**2+(est04-m)**2
+                if b**2>8*c:
+                    est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est01=myround(-b/4,2)
+                if est01<0.1:
+                    est01=0.1
+                est05=myround(x-est01,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            elif rank==4:
+                est04=bid
+                est05=bidList[4][1]
+                est03=myround(est04+s,2) ## guess
+                if est03<0.1:
+                    est03=0.1
+                x=5*m-est03-est04-est05
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est03-m)**2+(est04-m)**2+(est05-m)**2
+                if b**2>8*c:
+                    est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est01=myround(-b/4,2)
+                if est01<0.1:
+                    est01=0.1
+                est02=myround(x-est01,2)
+                if est02<0.1:
+                    est02=0.1
+                
+            else: #the bidder ranked fifth. Need to make two guesses.
+                est05=bid
+                est03=m #guess
+                if est03<0.1:
+                    est03=0.1
+                est04=myround((est03+est05)/2,2) ##another guess
+                if est04<0.1:
+                    est04=0.1        
+                x=5*m-est03-est04-est05
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est03-m)**2+(est04-m)**2+(est05-m)**2
+                if b**2>8*c:
+                    est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est01=myround(-b/4,2)
+                if est01<0.1:
+                    est01=0.1
+                est02=myround(x-est01,2)
+                if est02<0.1:
+                    est02=0.1
+            temp=sorted([est01,est02,est03,est04,est05],reverse=True)    
+            indiEstDict.update({bidderNo1:temp[0],bidderNo2:temp[1],bidderNo3:temp[2],\
+                               bidderNo4:temp[3],bidderNo5:temp[4]})            
+            estDict1.update({bidder:indiEstDict}) 
+   
+    
+        for i in estDict0:
+            for j in estDict0[i]:
+                if estDict0[i][j]=='NA':
+                    newEst=estDict1[i][j]
+                else:
+                    if estDict1[i][j]=='NA':
+                        newEst=estDict0[i][j]
+                    else:
+                        ## weighted by smoothing factor sf
+                        newEst=myround(sf*estDict0[i][j]+(1-sf)*estDict1[i][j],2)
+                estDict0[i].update({j:newEst})
+        
+        for bidder in allBidders:
+            temp={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',b7:'NA',b8:'NA',\
+                  b9:'NA',b10:'NA'}
+            estDict1.update({bidder:temp})
+    
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            temp=sorted([(k,v) for k,v in estDict0[bidder].items() \
+                if type(v)==float],key=lambda est: est[-1], reverse=True)
+            estList=[tup[0] for tup in temp]
+            estRank=estList.index(bidder)+1
+            if choosenCountDict[bidder]<2:
+                nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+            else:
+                if estRank in {1,len(estList)}:
+                    nextBid=myround(value,2)
+                else:
+                    nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+            if nextBid>value:
+                nextBid=myround(value-0.5,2)
+            if nextBid<0.1:
+                nextBid=0.1
+            nextBidDict[bidder]=nextBid  
+        
+        count_round+=1
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    count_loop+=1
+
+book.save('FICAllPar_VALUE100100.xls')
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+########################################################################################################################################
+Stochastic entry. Full information disclousure. Fictitious learning.
+1. Stochastic entry. In each round, randomly draw 5 out of 10  bidders bid for 4 slots.
+2. Use GSP mechanism.
+3. Bidders valuations: 10 to 100. A bidder never bid over his valuation. 
+4. In the first 2 rounds, bid is randomly generated from unif(0, valuation)
+    for each bidder.
+5. Full information disclosure. Choosen bidders know all bids of each round.
+6. Fictitious learning. From round 3, bidders use Fictitious learning to update
+    their bid.
+"""
+"""
+decay rate and smoothing factor defined for sensitivity test
+2016-07-25
+change excel output, remove variables' names, put bidders' values aside
+2016-09-11
+"""
+
+
+import numpy as np,xlwt,xlrd
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+
+## define smoothing factor
+sf=1
+
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+       
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    nextBidDict={}
+    for bidder in allBidders:
+        nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        nextBidDict.update({bidder:nextBid})
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    ficEstDict={}
+    for bidder in allBidders:
+        ficEstDict[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}  
+    
+    count_round=0
+    while count_round<n_round:        
+
+        choosen=set(np.random.choice(allBidders,5,replace=False))
+
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+                
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            bid=nextBidDict[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+    
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')
+    
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)  
+    
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4)
+        effvcg=revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revopt'].append(2*revvcg)
+
+        tempD={}    
+        for bidder in allBidders:
+            tempD[bidder]={i:'NA' for i in allBidders}
+        
+        indiEstDict={i:'NA' for i in allBidders}
+        for tup in bidList:
+            bidder=tup[0]
+            bid=tup[1]
+            indiEstDict.update({bidder:bid})
+        
+        for tup in bidList:
+            bidder=tup[0]
+            tempD.update({bidder:indiEstDict})
+                       
+        for i in ficEstDict:
+            for j in ficEstDict[i]:
+                if ficEstDict[i][j]=='NA':
+                    newEst=tempD[i][j]
+                else:
+                    if tempD[i][j]=='NA':
+                        newEst=ficEstDict[i][j]
+                    else:
+                        ##weighted average of two rounds. weighted by sf
+                        newEst=myround(sf*ficEstDict[i][j]+(1-sf)*tempD[i][j],2)
+                ficEstDict[i].update({j:newEst})        
+        
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            temp=sorted([(k,v) for k,v in ficEstDict[bidder].items() \
+                if type(v)==float],key=lambda est: est[-1], reverse=True)
+            estList=[tup[0] for tup in temp]
+            estRank=estList.index(bidder)+1
+            if choosenCountDict[bidder]<2:
+                nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+            else:
+                if estRank in {1,len(estList)}:
+                    nextBid=myround(value,2)
+                else:
+                    nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+            if nextBid>value:
+                nextBid=myround(value-0.5,2)
+            if nextBid<0.1:
+                nextBid=0.1
+            nextBidDict[bidder]=nextBid  
+                
+        count_round+=1
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    
+    count_loop+=1
+
+book.save('FICStoFul_VALUE100100.xls')
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+######################################################################################################################################
+
+
+"""stochastic entry. No information disclousure. Fictitious learning.
+1. From 10 bidders, randomly select five bid for 4 slots. 
+2. Use GSP mechanism.
+3. Bidders valuations: 10,20,30,40,50,60,70,80,90,100. 
+    A bidder never bid over his valuation. 
+4. In the first 2 rounds, bid is randomly generated from unif(0.1, valuation)
+    for each bidder.
+5. No information disclosure. All bidders know his own bid, bid of his next
+   highest rival (NHR). Ranks are public information.
+6. Fictitious learning. From round 3, bidders use Fictitious learning to update
+    their bid.
+"""
+"""
+decay rate and smoothing factor defined for sensitivity test
+2016-07-25
+change excel output, remove variables' names, put bidders' values aside
+2016-09-11
+"""
+
+import numpy as np,xlwt,xlrd
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+    
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+
+## define smoothing factor
+sf=1
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+       
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    nextBidDict={}
+    for bidder in allBidders:
+        nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        nextBidDict.update({bidder:nextBid})
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]    
+
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    estDict0={}
+    for bidder in allBidders:
+        temp={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',b7:'NA',b8:'NA',\
+              b9:'NA',b10:'NA'}
+        estDict0.update({bidder:temp})
+    
+    ## Create another dictionary of estimated valuation of last round 
+    ## start from second round. Need to be reset to all 'NA' after each round.
+    estDict1={}
+    for bidder in allBidders:
+        temp={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',b7:'NA',b8:'NA',\
+              b9:'NA',b10:'NA'}
+        estDict1.update({bidder:temp})    
+    
+    count_round=0
+    while count_round<n_round:
+        choosen=set(np.random.choice(allBidders,5,replace=False))
+
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')
+
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            bid=nextBidDict[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+        
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')
+    
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)  
+    
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4)
+        effvcg=revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revopt'].append(2*revvcg)
+        
+        bidderNo1=bidList[0][0]
+        bidderNo2=bidList[1][0]
+        bidderNo3=bidList[2][0]
+        bidderNo4=bidList[3][0]
+        bidderNo5=bidList[4][0]
+    
+        for tup in bidList:
+            bidder=tup[0]
+            bid=tup[1]
+            rank=bidList.index(tup)+1
+            indiEstDict=estDict1[bidder]
+            if rank==1:
+                est01=bid
+                est02=bidList[1][1]
+                d=myround(est01-est02,2)
+                est03=myround(est02-d,2) 
+                if est03<0.1:
+                    est03=0.1
+                est04=myround(est03-d,2)
+                if est04<0.1:
+                    est04=0.1
+                est05=myround(est04-d,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            
+            elif rank==2:
+                est02=bid ##known info
+                est03=bidList[2][1] ##known info
+                d=myround(est02-est03,2)
+                est01=myround(est02+d,2) ##guess 
+                if est01<0.1:
+                    est01=0.1
+                est04=myround(est03-d,2)
+                if est04<0.1:
+                    est04=0.1
+                est05=myround(est04-d,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            elif rank==3:
+                est03=bid
+                est04=bidList[3][1]
+                d=myround(est03-est04,2)            
+                est02=myround(est03+d,2) 
+                if est02<0.1:
+                    est02=0.1
+                est01=myround(est02+d,2)
+                if est01<0.1:
+                    est01=0.1
+                est05=myround(est04-d,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            elif rank==4:
+                est04=bid
+                est05=bidList[4][1]
+                d=myround(est04-est05,2)
+                est03=myround(est04+d,2)
+                if est03<0.1:
+                    est03=0.1
+                est02=myround(est03+d,2)
+                if est02<0.1:
+                    est02=0.1
+                est01=myround(est02+d,2)
+                if est01<0.1:
+                    est01=0.1
+                
+            else: #the bidder ranked fifth.
+                est05=bid
+                d=abs(myround(est05-0.1,2))
+                est04=myround(est05+d,2)
+                est03=myround(est04+d,2)
+                est02=myround(est03+d,2)
+                est01=myround(est02+d,2)
+                
+            temp=sorted([est01,est02,est03,est04,est05],reverse=True)    
+            indiEstDict.update({bidderNo1:temp[0],bidderNo2:temp[1],\
+                bidderNo3:temp[2],bidderNo4:temp[3],bidderNo5:temp[4]})            
+            estDict1.update({bidder:indiEstDict}) 
+    
+        for i in estDict0:
+            for j in estDict0[i]:
+                if estDict0[i][j]=='NA':
+                    newEst=estDict1[i][j]
+                else:
+                    if estDict1[i][j]=='NA':
+                        newEst=estDict0[i][j]
+                    else:
+                        ##weighted by smoothing factor, sf
+                        newEst=myround(sf*estDict0[i][j]+(1-sf)*estDict1[i][j],2)
+                estDict0[i].update({j:newEst})
+                
+        
+        for bidder in allBidders:
+            temp={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',b7:'NA',b8:'NA',\
+                  b9:'NA',b10:'NA'}
+            estDict1.update({bidder:temp})
+    
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            temp=sorted([(k,v) for k,v in estDict0[bidder].items() \
+                if type(v)==float],key=lambda est: est[-1], reverse=True)
+            estList=[tup[0] for tup in temp]
+            estRank=estList.index(bidder)+1
+            if choosenCountDict[bidder]<2:
+                nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+            else:
+                if estRank in {1,len(estList)}:
+                    nextBid=myround(value,2)
+                else:
+                    nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+            if nextBid>value:
+                nextBid=myround(value-0.5,2)
+            if nextBid<0.1:
+                nextBid=0.1
+            nextBidDict[bidder]=nextBid
+        count_round+=1    
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+        
+    count_loop+=1
+
+book.save('FICStoNon_VALUE100100.xls')
+
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+
+########################################################################################################################################
+"""Stochastic entry. Partial information disclousure. Fictitious learning.
+1. Stochastic entry. In each round, randomly draw 5 out of 10  bidders bid for 4 slots.
+2. Use GSP mechanism.
+3. Bidders valuations: 10 to 100. A bidder never bid over his valuation. 
+4. In the first 2 rounds, bid is randomly generated from unif(0.1, valuation)
+    for each bidder.
+5. Partial information disclosure. Bidders know his own bid and next highest
+   rival's bid and mean and standard deviation.
+6. Fictitious learning. From round 3, bidders use Fictitious learning to update
+    their bid.
+"""
+"""
+decay rate and smoothing factor defined for sensitivity test
+2016-07-25
+change excel output, remove variables' names, put bidders' values aside
+2016-09-11
+"""
+
+import numpy as np,xlwt,xlrd, math
+
+def myround(a_float,n):
+    return float(str(round(a_float,n)))
+    
+## Create 10 bidders
+b1='bidder01'
+b2='bidder02'
+b3='bidder03'
+b4='bidder04'
+b5='bidder05'
+b6='bidder06'
+b7='bidder07'
+b8='bidder08'
+b9='bidder09'
+b10='bidder10'
+
+allBidders=[b1,b2,b3,b4,b5,b6,b7,b8,b9,b10]
+
+## Extract valuations from UNIFORMIID
+sh = xlrd.open_workbook('VALUE.xlsx').sheet_by_index(0)
+
+## define smoothing factor
+sf=1
+##define decay rate
+decay=1
+
+## get number of clicks based on rank according to decay rate
+click1=100
+click2=click1*decay
+click3=click1*decay*decay
+click4=click1*decay*decay*decay
+## number of realizations in external file. 
+n_loop=sh.nrows-1
+
+## number of rounds in each loop
+n_round=30
+
+book=xlwt.Workbook()
+sheet1=book.add_sheet('sheet1')
+
+count_loop=0
+while count_loop<n_loop:
+    ## Create a value dictionary of each bidder and his valuation    
+    allValues=sorted(list(sh.row_values(count_loop+1,start_colx=1)))
+    valueDict={}
+    for tup in zip(allBidders,allValues):
+        valueDict[tup[0]]=tup[1]
+       
+    ## Create a dictionary of bidders' next bid. Initial bid is randomly draw from
+    ##  unif(0.1,value)
+    nextBidDict={}
+    for bidder in allBidders:
+        nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+        nextBidDict.update({bidder:nextBid})
+    ## Create a bid dictionary of each bidder and his bid in each round. 
+    bidDict={}
+    for bidder in allBidders:
+        bidDict[bidder]=[]    
+    
+    ## create a dictionary to record how many times a bidder is choosen
+    choosenCountDict={}
+    for bidder in allBidders:
+        choosenCountDict[bidder]=0
+    
+    ## Create a dictionary with record of each bidder in each round. If a bidder 
+    ## is not choosen, then the record will be 'NA'.
+    allRecordDict={}
+    for bidder in allBidders:
+        allRecordDict[bidder]=[]
+        allRecordDict[bidder+'_br']=[]
+    allRecordDict['revenue']=[]
+    allRecordDict['efficiency']=[]
+    allRecordDict['revvcg']=[]
+    allRecordDict['effvcg']=[]
+    allRecordDict['revopt']=[]
+    allRecordDict['rev_br']=[]
+        
+    ##Create a dictionary of estimated valuations for each bidder. 
+    ## this dictionary need update to combine information of each round
+    estDict0={}
+    for bidder in allBidders:
+        estDict0[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA',b9:'NA',b10:'NA'}
+    
+    
+    ## Create another dictionary of estimated valuation of last round 
+    ## start from second round. Need to be reset to all 'NA' after each round.
+    estDict1={}
+    for bidder in allBidders:
+        estDict1[bidder]={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',\
+                          b7:'NA',b8:'NA', b9:'NA',b10:'NA'} 
+    
+    count_round=0
+    while count_round<n_round:        
+        
+        choosen=set(np.random.choice(allBidders,5,replace=False))
+        
+        ##create a list of tuple of bidders and values of choosen bidders, 
+        ##rank from low to high
+        vTL=sorted([(bidder, valueDict[bidder]) for bidder in choosen], \
+                    key=lambda value: value[-1])
+        ##best response for bidder with the lowest value in vTL is its true 
+        ## value
+        br1=myround(vTL[0][1],2)
+        ## best response for bidder with the second lowest value in vTL 
+        br2=myround(vTL[1][1]-0.5*(vTL[1][1]-br1),2)
+        br3=myround(vTL[2][1]-0.5*(vTL[2][1]-br2),2)
+        br4=myround(vTL[3][1]-0.5*(vTL[3][1]-br3),2)
+        br5=myround(vTL[4][1],2)
+        rev_br=myround(br1*click4+br2*click3+br3*click2+br4*click1,2)
+        allRecordDict[vTL[0][0]+'_br'].append(br1)
+        allRecordDict[vTL[1][0]+'_br'].append(br2)
+        allRecordDict[vTL[2][0]+'_br'].append(br3)
+        allRecordDict[vTL[3][0]+'_br'].append(br4)
+        allRecordDict[vTL[4][0]+'_br'].append(br5)
+        allRecordDict['rev_br'].append(rev_br)
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder+'_br'].append('NA')        
+              
+        bidList=[]
+        for bidder in choosen:
+            choosenCount=choosenCountDict[bidder]+1
+            choosenCountDict.update({bidder:choosenCount})
+            bid=nextBidDict[bidder]
+            bidList.append((bidder,bid))
+            bidDict[bidder].append(bid)
+            allRecordDict[bidder].append(bid)
+        bidList.sort(key=lambda bid: bid[-1], reverse=True)
+
+        v01=valueDict[bidList[0][0]]
+        v02=valueDict[bidList[1][0]]
+        v03=valueDict[bidList[2][0]]
+        v04=valueDict[bidList[3][0]]
+        v05=valueDict[bidList[4][0]]
+        r01=bidList[0][1]
+        r02=bidList[1][1]
+        r03=bidList[2][1]
+        r04=bidList[3][1]
+        r05=bidList[4][1]
+        ## calculate revenue, efficiency, vcg revenue, vcg efficiency,
+        ##   optimal revenue of the round
+        rev=myround(r02*click1+r03*click2+r04*click3+r05*click4,2)
+        eff=myround(rev+(v01-r02)*click1+(v02-r03)*click2+(v03-r04)*click3+(v04-r05)*click4,2)
+        vList=sorted([v01,v02,v03,v04,v05],reverse=True)
+        revvcg=myround(0.5*(vList[1]*click1+vList[2]*click2+vList[3]*click3+vList[4]*click4),2)
+        effvcg=myround(revvcg+(vList[0]-0.5*vList[1])*click1+\
+                  (vList[1]-0.5*vList[2])*click2+(vList[2]-0.5*vList[3])*click3+\
+                  (vList[3]-0.5*vList[4])*click4,2)
+        allRecordDict['revvcg'].append(revvcg)
+        allRecordDict['effvcg'].append(effvcg)
+        allRecordDict['revenue'].append(rev)
+        allRecordDict['efficiency'].append(eff)
+        allRecordDict['revopt'].append(revvcg*2)
+        
+        for bidder in allBidders:
+            if bidder not in choosen:
+                allRecordDict[bidder].append('NA')        
+
+        bidderNo1=bidList[0][0]
+        bidderNo2=bidList[1][0]
+        bidderNo3=bidList[2][0]
+        bidderNo4=bidList[3][0]
+        bidderNo5=bidList[4][0]
+        
+        temp=[]
+        for tup in bidList:
+            temp.append(tup[-1])
+        m=myround(np.mean(temp),2)
+        s=myround(np.std(temp),2)
+        
+        for tup in bidList:
+            bidder=tup[0]
+            bid=tup[1]
+            rank=bidList.index(tup)+1
+            indiEstDict=estDict1[bidder]
+            if rank==1:
+                est01=bid
+                est02=bidList[1][1]
+                est03=myround(est02-s,2) ## guess by using second bid minus one S.D.
+                if est03<0.1:
+                    est03=0.1
+                x=5*m-est01-est02-est03
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est01-m)**2+(est02-m)**2+(est03-m)**2
+                if b**2>8*c:
+                    est04=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est04=myround(-b/4,2)
+                if est04<0.1:
+                    est04=0.1
+                est05=myround(x-est04,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            
+            elif rank==2:
+                est02=bid ##known info
+                est03=bidList[2][1] ##known info
+                est01=myround(est02+s,2) ##guess 
+                if est01<0.1:
+                    est01=0.1
+                x=5*m-est01-est02-est03
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est01-m)**2+(est02-m)**2+(est03-m)**2
+                if b**2>8*c:
+                    est04=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est04=myround(-b/4,2)
+                if est04<0.1:
+                    est04=0.1
+                est05=myround(x-est04,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            elif rank==3:
+                est03=bid
+                est04=bidList[3][1]
+                est02=myround(est03+s,2) ##guess
+                if est02<0.1:
+                    est02=0.1
+                x=5*m-est02-est03-est04
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est02-m)**2+(est03-m)**2+(est04-m)**2
+                if b**2>8*c:
+                    est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est01=myround(-b/4,2)
+                if est01<0.1:
+                    est01=0.1
+                est05=myround(x-est01,2)
+                if est05<0.1:
+                    est05=0.1
+                
+            elif rank==4:
+                est04=bid
+                est05=bidList[4][1]
+                est03=myround(est04+s,2) ## guess
+                if est03<0.1:
+                    est03=0.1
+                x=5*m-est03-est04-est05
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est03-m)**2+(est04-m)**2+(est05-m)**2
+                if b**2>8*c:
+                    est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est01=myround(-b/4,2)
+                if est01<0.1:
+                    est01=0.1
+                est02=myround(x-est01,2)
+                if est02<0.1:
+                    est02=0.1
+                
+            else: #the bidder ranked fifth. Need to make two guesses.
+                est05=bid
+                est03=m #guess
+                if est03<0.1:
+                    est03=0.1
+                est04=myround((est03+est05)/2,2) ##another guess
+                if est04<0.1:
+                    est04=0.1        
+                x=5*m-est03-est04-est05
+                b=-2*x
+                c=2*m**2+x**2-2*m*x-5*s**2+(est03-m)**2+(est04-m)**2+(est05-m)**2
+                if b**2>8*c:
+                    est01=myround((-b+math.sqrt(b**2-8*c))/4,2)
+                else:
+                    est01=myround(-b/4,2)
+                if est01<0.1:
+                    est01=0.1
+                est02=myround(x-est01,2)
+                if est02<0.1:
+                    est02=0.1
+            temp=sorted([est01,est02,est03,est04,est05],reverse=True)    
+            indiEstDict.update({bidderNo1:temp[0],bidderNo2:temp[1],bidderNo3:temp[2],\
+                               bidderNo4:temp[3],bidderNo5:temp[4]})            
+            estDict1.update({bidder:indiEstDict}) 
+   
+    
+        for i in estDict0:
+            for j in estDict0[i]:
+                if estDict0[i][j]=='NA':
+                    newEst=estDict1[i][j]
+                else:
+                    if estDict1[i][j]=='NA':
+                        newEst=estDict0[i][j]
+                    else:
+                        newEst=myround(sf*estDict0[i][j]+(1-sf)*estDict1[i][j],2)
+                estDict0[i].update({j:newEst})
+        
+        for bidder in allBidders:
+            temp={b1:'NA',b2:'NA',b3:'NA',b4:'NA',b5:'NA',b6:'NA',b7:'NA',b8:'NA',\
+                  b9:'NA',b10:'NA'}
+            estDict1.update({bidder:temp})
+    
+        for tup in bidList:
+            bidder=tup[0]
+            value=valueDict[bidder]
+            temp=sorted([(k,v) for k,v in estDict0[bidder].items() \
+                if type(v)==float],key=lambda est: est[-1], reverse=True)
+            estList=[tup[0] for tup in temp]
+            estRank=estList.index(bidder)+1
+            if choosenCountDict[bidder]<2:
+                nextBid=myround(np.random.uniform(0.1,valueDict[bidder]),2)
+            else:
+                if estRank in {1,len(estList)}:
+                    nextBid=myround(value,2)
+                else:
+                    nextBid=myround(value-0.5*(value-temp[estRank][1]),2)
+            if nextBid>value:
+                nextBid=myround(value-0.5,2)
+            if nextBid<0.1:
+                nextBid=0.1
+            nextBidDict[bidder]=nextBid  
+        
+        count_round+=1
+
+    ## create a list containing information needed to output and sort according 
+    ##  bidders.
+    infoList=list(allRecordDict.items())
+    infoList.sort(key=lambda bidder: bidder[0])
+    
+    ## create a list ready for output.
+    outputList=[]
+    for tup in infoList:
+        tempList=[tup[0]]
+        for bid in tup[1]:
+            tempList.append(bid)
+        outputList.append(tempList)    
+    
+    ## number of first row of each loop
+    start_row=count_loop*n_round
+    for n, value in enumerate(allValues):
+        sheet1.write(start_row,n,myround(value,2))
+    for col, infoByBidder in enumerate(outputList):
+        for row, e in enumerate(infoByBidder[1:]):
+            sheet1.write(row+start_row,col+len(allBidders),e)
+    
+    
+    count_loop+=1
+
+book.save('FICStoPar_VALUE100100.xls')
+'''
+variables in excel output:
+value of bidder01
+value of bidder02
+value of bidder03
+value of bidder04
+value of bidder05
+value of bidder06
+value of bidder07
+value of bidder08
+value of bidder09
+value of bidder10
+bidder01 (bidder01's bid of this round)
+bidder01_br
+bidder01_strat
+bidder02 bid
+bidder02_br
+bidder02_strat
+bidder03
+bidder03_br
+bidder03_strat
+bidder04
+bidder04_br
+bidder04_strat
+bidder05
+bidder05_br
+bidder05_strat
+bidder06
+bidder06_br
+bidder06_strat
+bidder07
+bidder07_br
+bidder07_strat
+bidder08
+bidder08_br
+bidder08_strat
+bidder09
+bidder09_br
+bidder09_strat
+bidder10
+bidder10_br
+bidder10_strat
+efficiency
+effvcg
+rev_br
+revenue
+revopt
+revvcg
+'''
+
+
+
+
+
